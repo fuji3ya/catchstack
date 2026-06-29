@@ -16,3 +16,15 @@ node_modules/
 ios/build/
 android/build/
 scratchpad_*.txt
+
+# Secrets / signing — NEVER commit (OPSEC gate, public repo)
+.secrets/
+.env
+.env.*
+credentials.json
+*.mobileprovision
+*.p12
+*.p8
+*.cer
+*.key
+*_password.txt

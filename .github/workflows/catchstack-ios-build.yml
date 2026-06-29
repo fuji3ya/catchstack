@@ -1,0 +1,236 @@
+name: Catchstack iOS Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_testflight:
+        description: "Upload the signed build to TestFlight"
+        type: boolean
+        default: true
+  push:
+    branches:
+      - master
+    paths:
+      - "app/**"
+      - "lib/**"
+      - "components/**"
+      - "assets/**"
+      - "app.json"
+      - "package.json"
+      - "package-lock.json"
+      - "babel.config.js"
+      - "ExportOptions.plist"
+      - ".github/workflows/catchstack-ios-build.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "lib/**"
+      - "components/**"
+      - "app.json"
+      - ".github/workflows/catchstack-ios-build.yml"
+
+jobs:
+  # Free, unsigned compile gate. No secrets, no ASC record needed. Compiles the
+  # full JS bundle + native pods. The only iOS compile gate available without a Mac.
+  simulator-build:
+    name: iPhone Simulator Build (compile gate)
+    runs-on: macos-26
+    timeout-minutes: 60
+    if: github.event_name != 'workflow_dispatch'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode (Expo SDK56 'apple' SPM pkg needs Swift 6.2)
+        run: |
+          set -euo pipefail
+          LATEST=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$LATEST" ]; then LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1); fi
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Type-check (tsc) + unit tests (vitest)
+        run: |
+          npx tsc --noEmit
+          npx vitest run
+
+      - name: Expo prebuild (iOS)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install --repo-update
+
+      - name: Resolve workspace and scheme
+        id: xc
+        run: |
+          set -euo pipefail
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -1)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys,json;print(json.load(sys.stdin)['workspace']['schemes'][0])")
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Resolved workspace=$WORKSPACE scheme=$SCHEME"
+
+      - name: Build for simulator (compile only, generic destination)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.workspace }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild.log
+
+      - name: Upload xcodebuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catchstack-sim-log
+          path: xcodebuild.log
+
+  # Signed archive -> IPA -> TestFlight. Manual dispatch only (needs secrets +
+  # ASC app record). Required secrets:
+  #   BUILD_CERTIFICATE_BASE64 / P12_PASSWORD / BUILD_PROVISION_PROFILE_BASE64 /
+  #   KEYCHAIN_PASSWORD / ASC_API_KEY_BASE64 / ASC_API_KEY_ID / ASC_API_ISSUER_ID
+  signed-build:
+    name: Signed Archive + TestFlight
+    runs-on: macos-26
+    timeout-minutes: 90
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode (iOS 26 SDK required by App Store)
+        run: |
+          set -euo pipefail
+          LATEST=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$LATEST" ]; then
+            LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          fi
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Expo prebuild (iOS)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install --repo-update
+
+      - name: Resolve workspace and scheme
+        id: xc
+        run: |
+          set -euo pipefail
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -1)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json | python3 -c "import sys,json;print(json.load(sys.stdin)['workspace']['schemes'][0])")
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate and provisioning profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i "$PROFILE_PATH")")
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "Installed provisioning profile UUID: $UUID"
+
+      - name: Archive (signed)
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          PLIST=$(find ios -maxdepth 2 -name Info.plist -not -path "*/Pods/*" | head -1)
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST" \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" "$PLIST"
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.workspace }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/Catchstack.xcarchive" \
+            -skipPackagePluginValidation \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=YXFS993Z4K \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="Catchstack App Store Profile" \
+            archive | tee archive.log
+
+      - name: Export IPA
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Catchstack.xcarchive" \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates | tee export.log
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: catchstack-ipa
+          path: ${{ runner.temp }}/export/*.ipa
+
+      - name: Upload to TestFlight
+        if: inputs.upload_testflight
+        env:
+          ASC_API_KEY_BASE64: ${{ secrets.ASC_API_KEY_BASE64 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/private_keys"
+          echo "$ASC_API_KEY_BASE64" | base64 --decode > "$HOME/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
+          IPA=$(ls "$RUNNER_TEMP"/export/*.ipa | head -1)
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catchstack-signed-logs
+          path: |
+            archive.log
+            export.log

@@ -8,7 +8,9 @@ expo-env.d.ts
 # Dev artifacts — HTML mockups + their reference images.
 # Not part of the RN bundle; they're the source-of-truth for screen design,
 # but they don't belong in the iOS repo / build output.
-design/
+# NOTE: leading slash anchors this to the repo ROOT only — an unanchored
+# `design/` also matches lib/design/ (real RN source) and silently drops it.
+/design/
 
 # Local AsyncStorage / build / cache
 .expo/

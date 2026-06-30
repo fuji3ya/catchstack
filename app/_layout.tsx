@@ -5,6 +5,7 @@ import { useFigtree } from '@/lib/figtree';
 import { hydrateHoldings } from '@/lib/state/holdingsStore';
 import { hydrateAlerts } from '@/lib/state/alertsStore';
 import { hydrateSettings } from '@/lib/state/settingsStore';
+import { hydrateUserCatalog } from '@/lib/data/userCatalog';
 import { useAlertEngine } from '@/lib/state/useAlertEngine';
 
 export default function RootLayout() {
@@ -20,11 +21,11 @@ export default function RootLayout() {
     // Each hydrate already swallows its own error and falls back to seed;
     // this just logs which one failed (and we still render — better to run
     // on defaults than to block the whole app behind broken storage).
-    Promise.allSettled([hydrateHoldings(), hydrateAlerts(), hydrateSettings()]).then((results) => {
+    Promise.allSettled([hydrateHoldings(), hydrateAlerts(), hydrateSettings(), hydrateUserCatalog()]).then((results) => {
       results.forEach((r, i) => {
         if (r.status === 'rejected') {
           // eslint-disable-next-line no-console
-          console.warn(`[catchstack] hydrate ${['holdings', 'alerts', 'settings'][i]} failed:`, r.reason);
+          console.warn(`[catchstack] hydrate ${['holdings', 'alerts', 'settings', 'userCatalog'][i]} failed:`, r.reason);
         }
       });
       setStoresHydrated(true);

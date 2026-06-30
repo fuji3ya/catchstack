@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, View, Text, ScrollView, StyleSheet, TextInput, TouchableOpacity, useWindowDimensions } from 'react-native';
 import { showInfo, showConfirm } from '@/lib/ui/dialog';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,8 +13,12 @@ import { GradeBadge } from '@/components/GradeBadge';
 import { buildCollection, type CollectionCard } from '@/lib/data/collection';
 import { addHolding, updateHolding } from '@/lib/state/holdingsStore';
 import { useHoldings } from '@/lib/state/useHoldings';
-import { catMetaForCategory, gradeNum } from '@/lib/design/cardPresentation';
+import { catMetaForCategory, gradeNum, cleanName, gradeFor, dayMove, certFor } from '@/lib/design/cardPresentation';
 import { FEATURES } from '@/lib/features';
+import { searchCards } from '@/lib/data/cardSearch';
+import { addUserCard } from '@/lib/data/userCatalog';
+import { resolveCard } from '@/lib/data/catalog';
+import type { SeedCard } from '@/lib/data/seedCards';
 
 function MiniSlab({ uri }: { uri: string }) {
   const styles = useThemedStyles(makeStyles);
@@ -27,6 +31,27 @@ function MiniSlab({ uri }: { uri: string }) {
   );
 }
 
+// Map a SeedCard to a CollectionCard for display in the search results.
+// Mirrors what buildCollection() does for seed cards.
+function seedToCollectionCard(c: SeedCard): CollectionCard {
+  const grade = gradeFor(c.id);
+  return {
+    id: c.id,
+    category: c.category,
+    tcg: c.category === 'MTG' ? 'mtg' : 'pokemon',
+    title: cleanName(c.name),
+    set: c.set,
+    number: c.number,
+    imageUrl: c.image,
+    marketUsd: c.marketUsd,
+    grade,
+    gradeNum: gradeNum(grade),
+    cert: certFor(c.id),
+    dayPct: dayMove(c.id),
+    alert: false,
+  };
+}
+
 export default function AddScreen() {
   const styles = useThemedStyles(makeStyles);
   const tokens = useTheme();
@@ -35,7 +60,13 @@ export default function AddScreen() {
   const holdings = useHoldings();
   const catalog = useMemo(() => buildCollection(), []);
   const [query, setQuery] = useState('');
+  const [results, setResults] = useState<CollectionCard[]>([]);
+  const [searching, setSearching] = useState(false);
+  // Keep the raw SeedCard list so selectCard can find the SeedCard by id.
+  const lastSeedResults = useRef<SeedCard[]>([]);
   const [selected, setSelected] = useState<CollectionCard | null>(null);
+  // SeedCard for the currently selected card — needed to persist via addUserCard.
+  const [selectedSeed, setSelectedSeed] = useState<SeedCard | null>(null);
   const [price, setPrice] = useState('');
   const [date, setDate] = useState('');
   const [storage, setStorage] = useState('');
@@ -50,8 +81,13 @@ export default function AddScreen() {
       if (edit) {
         const h = holdings.find((x) => x.id === edit);
         if (!h) return;
-        const card = catalog.find((c) => c.id === h.catalogItemId);
-        if (card) setSelected({ ...card, grade: h.grade });
+        // resolveCard covers both seed and user-added live-searched cards.
+        const raw = resolveCard(h.catalogItemId);
+        if (raw) {
+          const card = seedToCollectionCard(raw);
+          setSelected({ ...card, grade: h.grade });
+          setSelectedSeed(raw);
+        }
         setPrice(h.cost != null ? String(h.cost) : '');
         setDate(h.acquisitionDate ?? '');
         setStorage(h.storage ?? '');
@@ -59,7 +95,10 @@ export default function AddScreen() {
         setPhotoUri(h.frontImageUrl ?? null);
       } else {
         setSelected(null);
+        setSelectedSeed(null);
         setQuery('');
+        setResults([]);
+        setSearching(false);
         setPrice('');
         setDate('');
         setStorage('');
@@ -72,7 +111,10 @@ export default function AddScreen() {
 
   function resetForm() {
     setSelected(null);
+    setSelectedSeed(null);
     setQuery('');
+    setResults([]);
+    setSearching(false);
     setPrice('');
     setDate('');
     setStorage('');
@@ -97,17 +139,45 @@ export default function AddScreen() {
     }
   }
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    return catalog
-      .filter((c) => c.title.toLowerCase().includes(q) || c.set.toLowerCase().includes(q) || c.cert.includes(q))
-      .slice(0, 6);
-  }, [catalog, query]);
+  // Debounced live search: 300ms after the user stops typing, fire both
+  // providers in parallel. AbortController cancels the in-flight request on
+  // query change or unmount so stale responses never land.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const seeds = await searchCards(q, ctrl.signal);
+        if (cancelled) return;
+        lastSeedResults.current = seeds;
+        setResults(seeds.map(seedToCollectionCard));
+      } catch {
+        // searchCards never throws, but guard anyway.
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [query]);
 
   function selectCard(c: CollectionCard) {
+    const seed = lastSeedResults.current.find((s) => s.id === c.id) ?? null;
     setSelected(c);
+    setSelectedSeed(seed);
     setQuery('');
+    setResults([]);
   }
 
   function addToCollection() {
@@ -121,6 +191,13 @@ export default function AddScreen() {
       notes: notes.trim() || undefined,
       frontImageUrl: photoUri ?? undefined,
     };
+    // Persist the live-searched card into the userCatalog so that
+    // collection/detail/alerts can resolve it via resolveCard(id).
+    // This is idempotent — safe to call for seed cards too (they resolve
+    // via SEED_BY_ID first, so no real effect beyond a harmless upsert).
+    if (selectedSeed) {
+      addUserCard(selectedSeed);
+    }
     if (edit) {
       // include catalogItemId so changing the card in edit mode actually persists
       updateHolding(edit, { catalogItemId: selected.id, ...fields });
@@ -180,8 +257,15 @@ export default function AddScreen() {
             />
           </View>
 
-          {/* empty search hint */}
-          {query.trim().length > 0 && results.length === 0 && !selected && (
+          {/* searching indicator */}
+          {searching && !selected && (
+            <View style={styles.emptySearch}>
+              <Text style={styles.emptySearchTxt}>Searching…</Text>
+            </View>
+          )}
+
+          {/* empty search hint — only when not searching, query is long enough, and no results */}
+          {!searching && query.trim().length >= 2 && results.length === 0 && !selected && (
             <View style={styles.emptySearch}>
               <Text style={styles.emptySearchTxt}>
                 No matches in the catalog. Catchstack currently supports Pokemon (pokemontcg.io) and Magic: The Gathering (Scryfall).
@@ -201,9 +285,9 @@ export default function AddScreen() {
                       <Text style={styles.resultName} numberOfLines={1}>{c.title}</Text>
                       <Text style={styles.resultMeta} numberOfLines={1}>
                         {c.set}
-                        {/* Pokemon ids look like `swsh7-215` (last segment = card number);
-                            MTG ids look like `mtg-sheoldred` (last segment = name slug, useless). */}
-                        {c.id.startsWith('mtg-') ? '' : ` · #${c.id.split('-').pop()}`}
+                        {/* Show set · #number for every card that has a number — this
+                            disambiguates different printings of the same card name. */}
+                        {c.number ? ` · #${c.number}` : ''}
                         {` · ${cat.tag}`}
                       </Text>
                     </View>

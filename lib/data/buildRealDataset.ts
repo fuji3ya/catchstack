@@ -9,8 +9,7 @@
 import type { CatalogItem, Holding, PricePoint } from '@/lib/domain/types';
 import type { UserHolding } from '@/lib/state/holdingsStore';
 import { SEED_CARDS } from '@/lib/data/seedCards';
-
-const CARD_BY_ID = Object.fromEntries(SEED_CARDS.map((c) => [c.id, c]));
+import { resolveCard } from '@/lib/data/catalog';
 
 // Mulberry32 deterministic PRNG.
 function rng(seed: number) {
@@ -101,7 +100,7 @@ export interface CardSnapshot {
 }
 
 export function buildCardSnapshot(cardId: string, priceOverrides: Record<string, number> = {}): CardSnapshot | null {
-  const card = CARD_BY_ID[cardId];
+  const card = resolveCard(cardId);
   if (!card) return null;
   const price = priceOverrides[card.id] ?? card.marketUsd;
   const day = dayMove(card.id);
@@ -123,7 +122,7 @@ export function buildDatasetFromHoldings(
   priceOverrides: Record<string, number> = {}
 ): RealDataset {
   const enriched = userHoldings
-    .map((h) => ({ h, card: CARD_BY_ID[h.catalogItemId] }))
+    .map((h) => ({ h, card: resolveCard(h.catalogItemId) }))
     .filter((x): x is { h: UserHolding; card: (typeof SEED_CARDS)[number] } => !!x.card);
   // Display order: by market value desc (highest-value slabs lead).
   enriched.sort((a, b) => b.card.marketUsd - a.card.marketUsd);

@@ -3,8 +3,7 @@
 import { SEED_CARDS } from '@/lib/data/seedCards';
 import type { UserHolding } from '@/lib/state/holdingsStore';
 import { cleanName, gradeFor, gradeNum, dayMove, certFor } from '@/lib/design/cardPresentation';
-
-const CARD_BY_ID = Object.fromEntries(SEED_CARDS.map((c) => [c.id, c]));
+import { resolveCard } from '@/lib/data/catalog';
 
 export interface CollectionCard {
   id: string;
@@ -13,6 +12,7 @@ export interface CollectionCard {
   tcg: string;             // 'pokemon' | 'mtg'
   title: string;
   set: string;
+  number?: string;         // card number within its set (for version disambiguation)
   imageUrl: string;
   marketUsd: number;
   grade: string;
@@ -48,6 +48,7 @@ export function buildCollection(): CollectionCard[] {
       tcg: tcgOf(c.category),
       title: cleanName(c.name),
       set: c.set,
+      number: c.number,
       imageUrl: c.image,
       marketUsd: c.marketUsd,
       grade,
@@ -60,10 +61,12 @@ export function buildCollection(): CollectionCard[] {
 }
 
 // The user's OWNED collection (from the persisted holdings store).
+// Uses resolveCard so holdings that reference live-searched cards (not in the
+// bundled seed) still render correctly after the userCatalog is hydrated.
 export function buildCollectionFromHoldings(userHoldings: UserHolding[]): CollectionCard[] {
   return userHoldings
     .map((h): CollectionCard | null => {
-      const c = CARD_BY_ID[h.catalogItemId];
+      const c = resolveCard(h.catalogItemId);
       if (!c) return null;
       return {
         id: c.id,
@@ -72,6 +75,7 @@ export function buildCollectionFromHoldings(userHoldings: UserHolding[]): Collec
         tcg: tcgOf(c.category),
         title: cleanName(c.name),
         set: c.set,
+        number: c.number,
         imageUrl: h.frontImageUrl ?? c.image,
         marketUsd: c.marketUsd,
         grade: h.grade,

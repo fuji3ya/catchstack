@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Svg, { Path, Line, Circle, Defs, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
 import { useTheme, useThemedStyles, type Theme } from '@/lib/design/theme';
+import type { PricePoint } from '@/lib/domain/types';
 
 // Signature portfolio chart — ports design/portfolio.html's chart exactly:
 // canned growth SERIES (fractions of the real total), nice axis steps,
@@ -74,7 +75,7 @@ const PT = 14;
 const PB = 14;
 const Y_GUTTER = 50;
 
-export function PortfolioChart({ total, width }: { total: number; width: number }) {
+export function PortfolioChart({ total, width, history }: { total: number; width: number; history?: PricePoint[] }) {
   const styles = useThemedStyles(makeStyles);
   const tokens = useTheme();
   const [range, setRange] = useState<Range>('7D');
@@ -82,7 +83,24 @@ export function PortfolioChart({ total, width }: { total: number; width: number 
 
   const model = useMemo(() => {
     const ch = H - PT - PB;
-    const data = SERIES[range].map((f) => total * f);
+    // Per-card mode (history given): the card's own illustrative price history,
+    // sliced by the selected range — so every card draws a DISTINCT line.
+    // Portfolio mode (no history): canned growth SERIES scaled by `total`.
+    let data: number[];
+    let xLabels: string[];
+    if (history && history.length >= 2) {
+      const want: Record<Range, number> = { '7D': 7, '30D': 30, '90D': 90, ALL: history.length };
+      const k = Math.max(2, Math.min(want[range], history.length));
+      const win = history.slice(history.length - k);
+      data = win.map((p) => p.median);
+      xLabels = [0, 1, 2, 3].map((j) => {
+        const idx = Math.round((j / 3) * (win.length - 1));
+        return fmtMD(new Date(win[idx].date + 'T00:00:00Z'));
+      });
+    } else {
+      data = SERIES[range].map((f) => total * f);
+      xLabels = buildXLabels(range);
+    }
     const dmin = Math.min(...data), dmax = Math.max(...data);
     const step = pickStep(dmax - dmin || dmax * 0.1);
     const axMin = niceFloor(dmin - (dmax - dmin) * 0.12, step);
@@ -100,10 +118,10 @@ export function PortfolioChart({ total, width }: { total: number; width: number 
       if (v > axMin) gridVals.push(v);
     }
     const first = data[0];
-    const chgUsd = total - first;
+    const chgUsd = data[data.length - 1] - first;
     const chgPct = first > 0 ? (chgUsd / first) * 100 : 0;
-    return { line, fill, lp, y, gridVals, chgUsd, chgPct };
-  }, [range, total, plotW]);
+    return { line, fill, lp, y, gridVals, chgUsd, chgPct, xLabels };
+  }, [range, total, plotW, history]);
 
   const up = model.chgUsd >= 0;
   const lineColor = up ? tokens.color.gain : tokens.color.loss;
@@ -155,7 +173,7 @@ export function PortfolioChart({ total, width }: { total: number; width: number 
       </View>
 
       <View style={[styles.xaxis, { width: plotW }]}>
-        {buildXLabels(range).map((lab, i, arr) => {
+        {model.xLabels.map((lab, i, arr) => {
           const leftPct = (i / (arr.length - 1)) * 100;
           const align: 'flex-start' | 'center' | 'flex-end' = i === 0 ? 'flex-start' : i === arr.length - 1 ? 'flex-end' : 'center';
           return (

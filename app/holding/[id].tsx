@@ -179,7 +179,7 @@ export default function HoldingDetailScreen() {
 
         {/* chart */}
         <View style={styles.chartHolder}>
-          <PortfolioChart total={row.median} width={screenW - 48 - 32} />
+          <PortfolioChart total={row.median} width={screenW - 48 - 32} history={row.history} />
         </View>
 
         {/* signals */}

@@ -53,18 +53,28 @@ function dayMove(id: string): number {
 function synthHistory(id: string, end: number, dayPct: number, days: number): PricePoint[] {
   const r = rng(hashStr(id) ^ 0x9e3779b9);
   const prev = end / (1 + dayPct / 100);
-  const base = end * (0.45 + r() * 0.2);
   const n = Math.max(2, days);
   const vals = new Array<number>(n);
   // Keep full precision on the last two points so the displayed reference price
   // and portfolio total preserve cents (e.g. $18,135.82), matching the mockup.
   vals[n - 1] = end;
   vals[n - 2] = prev;
-  for (let i = 0; i < n - 2; i++) {
-    const t = n - 2 <= 0 ? 1 : i / (n - 2);
-    const trend = base + (prev - base) * t;
-    const noise = trend * (r() - 0.5) * 0.05;
-    vals[i] = Math.max(1, Math.round(trend + noise));
+  // Give every card a DISTINCT line. The old model was a near-linear ramp from
+  // ~0.5*end up to end with tiny noise, so after the chart's min/max normalize
+  // every card looked like the same gentle climb. Instead, walk BACKWARD from
+  // `prev` as a multiplicative random walk with a per-card overall drift (some
+  // slabs trended down over the window, some up, some sideways) and per-card
+  // volatility (some jagged, some smooth). The last two points stay exact (live
+  // price + today's dayPct); only the earlier, explicitly-illustrative path
+  // varies — and it now varies in SHAPE, not just scale.
+  const vol = 0.02 + r() * 0.055; // per-card daily volatility ~2%–7.5%
+  const drift = (r() * 2 - 1) * 0.012; // per-card up/down bias ±1.2%/day (forward)
+  let v = prev;
+  for (let i = n - 3; i >= 0; i--) {
+    // Forward daily return from day i to i+1; invert it to step one day back.
+    const ret = Math.max(-0.45, Math.min(0.45, drift + (r() * 2 - 1) * vol));
+    v = v / (1 + ret);
+    vals[i] = Math.max(1, Math.round(v));
   }
   // Anchor the synthesized line to TODAY so the x-axis and the "Updated" label
   // both move forward in time. Only the line's shape is synthetic; the end

@@ -129,9 +129,13 @@ export function PortfolioChart({ total, width }: { total: number; width: number 
         <View style={{ width: plotW }}>
           <Svg width={plotW} height={H}>
             <Defs>
+              {/* react-native-svg ignores the alpha channel in an rgba() stopColor,
+                  so the faded area fill rendered as a solid green block. Drive the
+                  fade with an explicit numeric stopOpacity on a solid color, and
+                  match the line color so the fill tracks gain (green) / loss (red). */}
               <SvgGradient id="pcArea" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor={tokens.color.chartFillTop} />
-                <Stop offset="1" stopColor={tokens.color.chartFillBottom} />
+                <Stop offset="0" stopColor={lineColor} stopOpacity={0.18} />
+                <Stop offset="1" stopColor={lineColor} stopOpacity={0} />
               </SvgGradient>
             </Defs>
             {model.gridVals.map((v, i) => (

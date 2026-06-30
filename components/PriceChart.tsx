@@ -91,8 +91,8 @@ export function PriceChart({ history, width, height, color = DEFAULT_CHART_LINE 
     <Svg width={width} height={height}>
       <Defs>
         <LinearGradient id={GRAD_ID} x1="0" y1="0" x2="0" y2="1">
-          <Stop offset="0" stopColor={tokens.color.chartFillTop} stopOpacity="1" />
-          <Stop offset="1" stopColor={tokens.color.chartFillBottom} stopOpacity="0" />
+          <Stop offset="0" stopColor={color} stopOpacity={0.18} />
+          <Stop offset="1" stopColor={color} stopOpacity={0} />
         </LinearGradient>
       </Defs>
 

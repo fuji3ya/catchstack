@@ -130,6 +130,23 @@ export default function SettingsScreen() {
           <Row icon="download-outline" color="#0D9488" label="Export collection (CSV)" pro={!pro} right={<Chevron />} onPress={exportCsv} />
         </View>
 
+        {/* JP相場 */}
+        <SectionLabel>Japan</SectionLabel>
+        <View style={styles.listCard}>
+          <Row
+            icon="globe-outline"
+            color="#E85D2B"
+            label="JP相場を調べる (β)"
+            right={
+              <View style={styles.valRow}>
+                <Text style={styles.staticVal}>遊々亭の販売・買取価格(円)</Text>
+                <Chevron />
+              </View>
+            }
+            onPress={() => router.push('/jp-lookup')}
+          />
+        </View>
+
         {/* About */}
         <SectionLabel>About</SectionLabel>
         <View style={styles.listCard}>

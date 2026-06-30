@@ -41,6 +41,7 @@ export default function RootLayout() {
       <Stack.Screen name="info/[topic]" options={{ presentation: 'card' }} />
       <Stack.Screen name="alerts" options={{ presentation: 'card' }} />
       <Stack.Screen name="insights" options={{ presentation: 'card' }} />
+      <Stack.Screen name="jp-lookup" options={{ presentation: 'card' }} />
     </Stack>
   );
 }
